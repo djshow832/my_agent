@@ -5,19 +5,19 @@ description: Generate reproducible randomized TiDB/MySQL-compatible initial data
 
 # tidb-randgen
 
-This skill implements **Step 1–2** of your workflow:
+This skill generates **initial schema + data** (recorded for reuse) and a **workload spec + executable SQL templates** derived from that schema.
 
-1) Randomly generate **initial schema + data** (and record its characteristics)
-2) Randomly generate a **workload spec + executable SQL templates** derived from that schema
+The key behavior: **initial data is generated once and then reused** across workload runs unless you explicitly delete the persisted schema directory.
 
-It intentionally does **not** run the 30-minute workload loop (Step 3) — the output is meant to be consumed by a separate runner.
+## Connection + persistence via .env
+This skill uses (and updates) a workspace `.env` file by default.
 
-## Prereq: get a TiDB connection (TiDB Cloud Zero)
-Use the existing `tidb-cloud-zero` skill to provision a disposable TiDB Cloud Zero instance and obtain a DSN.
+- `TIDB_DNS`: TiDB MySQL DSN (note: variable name is **DNS** per your request)
+  - If missing or invalid, the script provisions a new TiDB Cloud Zero instance (same API as `tidb-cloud-zero`) and writes `TIDB_DNS` back into `.env`.
+- `TIDB_SCHEMA_PATH`: directory holding persisted schema artifacts (`schema_spec.json`, load report, workload spec, templates)
+  - If present and contains `schema_spec.json`, schema generation can be skipped/reused.
 
-You will need a DSN in one of these forms:
-- `mysql://user:password@host:4000/dbname`
-- or pass `--host --port --user --password` (and optionally `--tls-ca`, `--tls-skip-verify`)
+You can override `.env` path with `--env`.
 
 ## Output artifacts
 All outputs are deterministic given `--seed`.
@@ -29,34 +29,39 @@ All outputs are deterministic given `--seed`.
 
 ## Quick start
 
-### Step 1a: generate schema spec + CREATE DATABASE/TABLE
+### Step 1a: generate schema spec + CREATE DATABASE/TABLE (persist & reuse)
 ```bash
 python3 skills/tidb-randgen/scripts/tidb_rand_schema.py \
-  --dsn "mysql://root:pass@127.0.0.1:4000" \
   --seed 12345 \
   --target-bytes 20000000 \
-  --out artifacts/schema_spec.json \
+  --schema-path artifacts/tidb_schema \
+  --out schema_spec.json \
+  --reuse-if-exists \
   --apply
 ```
+
+Notes:
+- If `.env` already has a valid `TIDB_DNS`, it will be used.
+- If `TIDB_DNS` is missing/invalid, a new TiDB Cloud Zero instance will be created and written to `.env`.
+- If `--reuse-if-exists` and `TIDB_SCHEMA_PATH/schema_spec.json` exists, it will be reused (no regeneration).
 
 ### Step 1b: load data
 ```bash
 python3 skills/tidb-randgen/scripts/tidb_rand_load.py \
-  --dsn "mysql://root:pass@127.0.0.1:4000" \
-  --schema artifacts/schema_spec.json \
   --seed 12345 \
-  --out artifacts/load_report.json \
+  --out artifacts/tidb_schema/load_report.json \
   --workers 16
 ```
+(Reads `TIDB_DNS` and `TIDB_SCHEMA_PATH/schema_spec.json` by default.)
 
 ### Step 2: generate workload spec + SQL templates derived from schema
 ```bash
 python3 skills/tidb-randgen/scripts/tidb_rand_workload.py \
-  --schema artifacts/schema_spec.json \
   --seed 999 \
-  --out artifacts/workload_spec.json \
-  --templates artifacts/sql_templates.jsonl
+  --out artifacts/tidb_schema/workload_spec.json \
+  --templates artifacts/tidb_schema/sql_templates.jsonl
 ```
+(Reads `TIDB_SCHEMA_PATH/schema_spec.json` by default.)
 
 ## DDL policy
 Workload templates may include DDL, but **never DROP** statements.

@@ -104,6 +104,7 @@ def _require_pymysql():
 
 def parse_mysql_dsn(dsn: str) -> Dict[str, Any]:
     # mysql://user:pass@host:port/db
+    # Note: password may contain special chars; keep this basic for now.
     m = re.match(r"^mysql://(?P<user>[^:@/]+)(:(?P<pw>[^@/]*))?@(?P<host>[^:/]+)(:(?P<port>\d+))?(/(?P<db>[^?]+))?", dsn)
     if not m:
         raise ValueError(f"invalid DSN: {dsn}")

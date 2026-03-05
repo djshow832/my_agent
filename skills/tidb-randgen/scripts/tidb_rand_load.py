@@ -6,6 +6,8 @@ import json
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
+import os
+
 from common import (
     connect_mysql,
     now_ms,
@@ -15,6 +17,7 @@ from common import (
     rng_from_seed,
     write_json,
 )
+from envutil import getenv, load_dotenv
 
 
 def gen_value(rng, col: Dict[str, Any], row_i: int, table_ctx: Dict[str, Any]):
@@ -173,14 +176,15 @@ def load_one_table(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dsn")
+    ap.add_argument("--env", default=".env")
+    ap.add_argument("--dsn", help="If omitted, read TIDB_DNS from .env")
     ap.add_argument("--host")
     ap.add_argument("--port", type=int, default=4000)
     ap.add_argument("--user")
     ap.add_argument("--password", default="")
     ap.add_argument("--seed", type=int, required=True)
 
-    ap.add_argument("--schema", required=True)
+    ap.add_argument("--schema", help="schema_spec.json; if omitted, read from TIDB_SCHEMA_PATH/schema_spec.json")
     ap.add_argument("--out", required=True)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--batch", type=int, default=500)
@@ -188,6 +192,16 @@ def main():
     ap.add_argument("--tls-skip-verify", action="store_true")
 
     args = ap.parse_args()
+
+    env = load_dotenv(args.env)
+    if not args.dsn:
+        args.dsn = getenv(env, "TIDB_DNS")
+
+    if not args.schema:
+        sp = getenv(env, "TIDB_SCHEMA_PATH")
+        if not sp:
+            raise SystemExit("missing --schema and TIDB_SCHEMA_PATH is not set")
+        args.schema = os.path.join(sp, "schema_spec.json")
 
     schema = read_json(args.schema)
 

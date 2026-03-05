@@ -4,7 +4,10 @@ import argparse
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
+import os
+
 from common import clamp, piecewise_bucket_choice, qident, qname, read_json, rng_from_seed, write_json
+from envutil import getenv, load_dotenv
 
 
 def pick_table(rng, schema) -> Tuple[str, Dict[str, Any]]:
@@ -250,11 +253,19 @@ def write_templates_jsonl(path: str, templates: List[Dict[str, Any]]):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--schema", required=True)
+    ap.add_argument("--env", default=".env")
+    ap.add_argument("--schema", help="schema_spec.json; if omitted, read from TIDB_SCHEMA_PATH/schema_spec.json")
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--templates", required=True)
     args = ap.parse_args()
+
+    env = load_dotenv(args.env)
+    if not args.schema:
+        sp = getenv(env, "TIDB_SCHEMA_PATH")
+        if not sp:
+            raise SystemExit("missing --schema and TIDB_SCHEMA_PATH is not set")
+        args.schema = os.path.join(sp, "schema_spec.json")
 
     schema = read_json(args.schema)
     rng = rng_from_seed(args.seed)

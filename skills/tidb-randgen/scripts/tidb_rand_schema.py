@@ -3,6 +3,8 @@
 import argparse
 from typing import Any, Dict, List, Optional, Tuple
 
+import os
+
 from common import (
     approx_bytes_for_row,
     clamp,
@@ -12,6 +14,8 @@ from common import (
     rng_from_seed,
     write_json,
 )
+from envutil import getenv, load_dotenv, upsert_dotenv
+from tidb_cloud_zero import provision, to_mysql_dsn
 
 
 def gen_column(rng, col_id: int, allow_auto_inc: bool) -> Dict[str, Any]:
@@ -127,26 +131,81 @@ def create_table_ddl(db: str, t: Dict[str, Any]) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dsn", help="mysql://user:pass@host:port[/db]")
+    ap.add_argument("--env", default=".env", help="dotenv path (default: .env)")
+    ap.add_argument("--dsn", help="mysql://user:pass@host:port[/db]. If omitted, read TIDB_DNS from .env")
     ap.add_argument("--host")
     ap.add_argument("--port", type=int, default=4000)
     ap.add_argument("--user")
     ap.add_argument("--password", default="")
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--schema-path", help="directory to persist schema artifacts; if omitted read TIDB_SCHEMA_PATH from .env")
     ap.add_argument("--target-bytes", type=int, default=50_000_000, help="approx total data bytes target")
     ap.add_argument("--apply", action="store_true", help="execute DDL on target")
+    ap.add_argument("--reuse-if-exists", action="store_true", help="if schema_path contains schema_spec.json, reuse it")
     ap.add_argument("--tls-ca")
     ap.add_argument("--tls-skip-verify", action="store_true")
 
+    # Per requirement: schema count 1-10; tables per schema 0-10
     ap.add_argument("--db-min", type=int, default=1)
-    ap.add_argument("--db-max", type=int, default=4)
-    ap.add_argument("--tables-min", type=int, default=2)
-    ap.add_argument("--tables-max", type=int, default=12)
+    ap.add_argument("--db-max", type=int, default=10)
+    ap.add_argument("--tables-min", type=int, default=0)
+    ap.add_argument("--tables-max", type=int, default=10)
     ap.add_argument("--cols-min", type=int, default=6)
     ap.add_argument("--cols-max", type=int, default=24)
 
     args = ap.parse_args()
+
+    env = load_dotenv(args.env)
+
+    # Resolve schema_path
+    schema_path = args.schema_path or getenv(env, "TIDB_SCHEMA_PATH")
+    if schema_path:
+        os.makedirs(schema_path, exist_ok=True)
+        # If out is relative, write into schema_path by default
+        if not os.path.isabs(args.out):
+            args.out = os.path.join(schema_path, os.path.basename(args.out))
+
+        existing = os.path.join(schema_path, "schema_spec.json")
+        if args.reuse_if_exists and os.path.exists(existing):
+            # reuse existing spec
+            print(existing)
+            return
+
+        # persist schema path into .env for later
+        upsert_dotenv(args.env, "TIDB_SCHEMA_PATH", os.path.abspath(schema_path), quote=True)
+
+    # Resolve DSN: CLI overrides env
+    if not args.dsn:
+        args.dsn = getenv(env, "TIDB_DNS")
+
+    # If DSN still missing, provision TiDB Cloud Zero and write to .env
+    if not args.dsn:
+        resp = provision(tag="tidb-randgen")
+        args.dsn = to_mysql_dsn(resp)
+        upsert_dotenv(args.env, "TIDB_DNS", args.dsn, quote=True)
+
+    # Validate DSN quickly (best-effort): SELECT 1
+    try:
+        conn = connect_mysql(
+            dsn=args.dsn,
+            host=args.host,
+            port=args.port,
+            user=args.user,
+            password=args.password,
+            tls_ca=args.tls_ca,
+            tls_skip_verify=args.tls_skip_verify,
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        finally:
+            conn.close()
+    except Exception:
+        # If env DSN is invalid, re-provision and overwrite.
+        resp = provision(tag="tidb-randgen")
+        args.dsn = to_mysql_dsn(resp)
+        upsert_dotenv(args.env, "TIDB_DNS", args.dsn, quote=True)
 
     rng = rng_from_seed(args.seed)
 
@@ -248,7 +307,8 @@ def main():
         mult = 0.3 + rng.random() * 2.5
         bytes_for_table = max(int(target * base_share * mult / len(all_tables) * len(all_tables)), 1024)
         row_size = per_table_sizes[i]
-        rows = clamp(int(bytes_for_table / max(row_size, 1)), 100, 2_000_000)
+        # Per requirement: 10 .. 1,000,000 rows per table
+        rows = clamp(int(bytes_for_table / max(row_size, 1)), 10, 1_000_000)
         t["row_count"] = rows
 
         # selectivity profiles for indexed columns
@@ -310,6 +370,12 @@ def main():
     spec["ddl"] = ddls
 
     write_json(args.out, spec)
+
+    # If schema_path set, also save a canonical copy named schema_spec.json
+    if schema_path:
+        canonical = os.path.join(schema_path, "schema_spec.json")
+        if os.path.abspath(args.out) != os.path.abspath(canonical):
+            write_json(canonical, spec)
 
     if args.apply:
         conn = connect_mysql(
