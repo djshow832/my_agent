@@ -144,6 +144,9 @@ def connect_mysql(
     if not host or not user:
         raise ValueError("host and user are required (or pass --dsn)")
 
+    # TiDB Cloud Serverless/Zero commonly requires TLS; many endpoints reject plaintext.
+    # If the user doesn't specify TLS flags explicitly, auto-enable system CA TLS
+    # for common TiDB Cloud hostnames.
     ssl_params = None
     if tls_ca or tls_skip_verify:
         ctx = ssl.create_default_context(cafile=tls_ca) if tls_ca else ssl.create_default_context()
@@ -151,6 +154,10 @@ def connect_mysql(
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
         ssl_params = {"ssl": ctx}
+    else:
+        h = (host or "").lower()
+        if "tidbcloud" in h or h.endswith(".tidbcloud.com"):
+            ssl_params = {"ssl": ssl.create_default_context()}
 
     conn = pymysql.connect(
         host=host,

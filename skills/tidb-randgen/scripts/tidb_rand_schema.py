@@ -13,6 +13,7 @@ from common import (
     qname,
     rng_from_seed,
     write_json,
+    read_json,
 )
 from envutil import getenv, load_dotenv, upsert_dotenv
 from tidb_cloud_zero import provision, to_mysql_dsn
@@ -83,8 +84,11 @@ def create_table_ddl(db: str, t: Dict[str, Any]) -> str:
         if c.get("has_default"):
             # Use simple defaults only.
             t_upper = c["type"].upper()
-            if t_upper.startswith("VARCHAR") or t_upper.startswith("TEXT"):
+            if t_upper.startswith("VARCHAR"):
                 parts.append("DEFAULT ''")
+            elif t_upper.startswith("TEXT") or t_upper.startswith("JSON") or t_upper.startswith("BLOB"):
+                # TiDB/MySQL do not allow defaults for TEXT/BLOB/JSON.
+                pass
             elif t_upper.startswith("DATE"):
                 parts.append("DEFAULT '2000-01-01'")
             elif t_upper.startswith("DATETIME") or t_upper.startswith("TIMESTAMP"):
@@ -97,9 +101,19 @@ def create_table_ddl(db: str, t: Dict[str, Any]) -> str:
     pk_clause = f"PRIMARY KEY ({', '.join(qident(c) for c in pk_cols)})"
     idx_clauses = [pk_clause]
 
+    part_col = None
+    if t.get("partition"):
+        part_col = t["partition"].get("column")
+
     for uk in t.get("unique_keys", []):
-        cols = ", ".join(qident(c) for c in uk["columns"])
-        idx_clauses.append(f"UNIQUE KEY {qident(uk['name'])} ({cols})")
+        cols_list = list(uk["columns"])
+        cols = ", ".join(qident(c) for c in cols_list)
+        # TiDB requires unique indexes on partitioned tables to either include all
+        # partitioning columns or be declared GLOBAL.
+        global_opt = ""
+        if part_col and part_col not in cols_list:
+            global_opt = " GLOBAL"
+        idx_clauses.append(f"UNIQUE KEY {qident(uk['name'])} ({cols}){global_opt}")
 
     for idx in t.get("secondary_indexes", []):
         cols = ", ".join(qident(c) for c in idx["columns"])
@@ -122,10 +136,12 @@ def create_table_ddl(db: str, t: Dict[str, Any]) -> str:
         + "\n)"
     )
 
+    # MySQL/TiDB grammar expects table options (e.g. CHARSET) before partition options.
+    ddl += " DEFAULT CHARSET=utf8mb4"
+
     if partition_clause:
         ddl += " " + partition_clause
 
-    ddl += " DEFAULT CHARSET=utf8mb4"
     return ddl
 
 
@@ -168,7 +184,26 @@ def main():
 
         existing = os.path.join(schema_path, "schema_spec.json")
         if args.reuse_if_exists and os.path.exists(existing):
-            # reuse existing spec
+            # Reuse existing spec. If --apply is set, (re)apply the DDL from the spec
+            # so that a previously-generated spec can be materialized on a fresh cluster.
+            if args.apply:
+                spec = read_json(existing)
+                ddls = spec.get("ddl") or []
+                conn = connect_mysql(
+                    dsn=args.dsn or getenv(env, "TIDB_DNS"),
+                    host=args.host,
+                    port=args.port,
+                    user=args.user,
+                    password=args.password,
+                    tls_ca=args.tls_ca,
+                    tls_skip_verify=args.tls_skip_verify,
+                )
+                try:
+                    with conn.cursor() as cur:
+                        for s in ddls:
+                            cur.execute(s)
+                finally:
+                    conn.close()
             print(existing)
             return
 
@@ -261,7 +296,10 @@ def main():
 
             # partition (optional)
             partition = None
-            if rng.random() < 0.15:
+            # NOTE: TiDB has additional constraints around partitioning + (clustered) unique/primary keys.
+            # To keep generated schemas broadly compatible (esp. on TiDB Cloud Serverless),
+            # we disable partition generation by default.
+            if False and rng.random() < 0.15:
                 # choose an INT/BIGINT/DATE column
                 cand = [c for c in cols if c["type"] in ("INT", "BIGINT", "DATE")]
                 if cand:

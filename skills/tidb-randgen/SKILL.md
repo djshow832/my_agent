@@ -63,6 +63,17 @@ python3 skills/tidb-randgen/scripts/tidb_rand_workload.py \
 ```
 (Reads `TIDB_SCHEMA_PATH/schema_spec.json` by default.)
 
+### Cleanup: drop generated databases and/or delete persisted schema directory
+```bash
+python3 skills/tidb-randgen/scripts/tidb_rand_cleanup.py \
+  --drop-dbs \
+  --delete-schema-dir \
+  --yes
+```
+Notes:
+- `--drop-dbs` drops databases recorded in `schema_spec.json`.
+- `--delete-schema-dir` removes `TIDB_SCHEMA_PATH` (guarded; refuses unsafe paths).
+
 ## DDL policy
 Workload templates may include DDL, but **never DROP** statements.
 Default DDL set is "safe": `CREATE INDEX`, `ALTER TABLE ADD INDEX`, `ANALYZE TABLE`.

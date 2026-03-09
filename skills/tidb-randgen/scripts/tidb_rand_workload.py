@@ -118,7 +118,7 @@ def gen_templates(schema: Dict[str, Any], rng) -> List[Dict[str, Any]]:
                         "name": f"insert_row::{dbn}.{tn}",
                         "weight": 0.06,
                         "kind": "DML",
-                        "sql": f"INSERT INTO {fq} ({cols_sql}) VALUES ({vals_sql})",
+                        "sql": f"INSERT INTO {fq} ({cols_sql}) VALUES ({vals_sql}) ON DUPLICATE KEY UPDATE {qident(ins_cols[0]['name'])}=VALUES({qident(ins_cols[0]['name'])})",
                         "params": {c["name"]: {"source": "gen", "db": dbn, "table": tn, "column": c["name"]} for c in ins_cols},
                         "expected_rows": 1,
                         "complexity": "point",
@@ -247,7 +247,9 @@ def gen_workload_spec(schema: Dict[str, Any], rng) -> Dict[str, Any]:
 def write_templates_jsonl(path: str, templates: List[Dict[str, Any]]):
     with open(path, "w", encoding="utf-8") as f:
         for t in templates:
-            f.write(json.dumps(t, sort_keys=True))
+            # Keep key order stable because some templates (notably INSERT) rely on
+            # params dict insertion order matching the SQL placeholder order.
+            f.write(json.dumps(t))
             f.write("\n")
 
 
